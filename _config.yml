@@ -1,21 +1,21 @@
 # Site settings
-title: Hux Blog
-SEOTitle: 黄玄的博客 | Hux Blog
+title: Jobin Blog
+SEOTitle: 深度海斌的博客 | Jobin Blog
 header-img: img/home-bg.jpg
 email: huxpro@gmail.com
-description: "关于前端与设计、黑客与画家 | 黄玄，Web & Mobile Lover，Software Engineer，UX Designer | 这里是 @Hux黄玄 的个人博客，与你一起发现更大的世界。"
-keyword: "黄玄, Hux黄玄, Hux, 鬼栈, huxpro, @huxpro, 黄玄的博客, Hux Blog, 博客, 个人网站, 互联网, Web, JavaScript, 前端, 设计"
-url: "https://huangxuan.me"              # your host, for absolute URL
+description: "关于OpenStack云计算技术、业余爱好音乐 | 海斌，Cloud Technology & AI Lover，Software Engineer | 这里是 @Jobin海斌 的个人博客，与你一起发现更大的世界。"
+keyword: "海斌, Jobin海斌, Jobin, 海斌的博客, Jobin Blog, 博客, 个人网站, 互联网, OpenStack, Kubernetes, Docker, DevOps"
+url: "https://helloworldjhb.github.io"              # your host, for absolute URL
 baseurl: ""                             # for example, '/blog' if your blog hosted on 'host/blog'
 
 
 
 # SNS settings
 RSS: false
-weibo_username:     huxpro
-zhihu_username:     huxpro
-github_username:    huxpro
-twitter_username:   huxpro
+weibo_username:     深度的海斌
+zhihu_username:     Jobin
+github_username:    helloworldjhb
+twitter_username:
 #facebook_username:  huxpro
 # linkedin_username:  firstname-lastname-idxxxx
 
@@ -48,7 +48,7 @@ kramdown:
 
 
 # Disqus settings
-disqus_username: hux
+disqus_username: jobin
 
 # Netease setttings
 netease_comment: false
@@ -61,14 +61,14 @@ netease_comment: false
 
 # Google Analytics
 ga_track_id: 'UA-49627206-1'            # Format: UA-xxxxxx-xx
-ga_domain: huangxuan.me
+ga_domain: helloworldjhb.github.io
 
 
 
 # Sidebar settings
 sidebar: true                           # whether or not using Sidebar.
-sidebar-about-description: "写写代码，做做设计，<br>离开世界之前，一切都是过程"
-sidebar-avatar: /img/avatar-hux.jpg      # use absolute URL, seeing it's used in both `/` and `/about/`
+sidebar-about-description: "写写代码，真常应物，真常得性；常应常静，常清静矣。"
+sidebar-avatar: /img/jobin.jpg      # use absolute URL, seeing it's used in both `/` and `/about/`
 
 
 
