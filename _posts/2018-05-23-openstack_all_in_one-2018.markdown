@@ -9,11 +9,10 @@ subtitle: ""
 date: 2018-05-23 22:17:00
 
 author:     "Jobin"
-header-img: "img/post-bg-2018.jpg"
+header-img: "img/post-bg-2018-513.jpg"
 catalog: true
 tags:
-
-​	- OpenStack
+    - OpenStack
 
 ---
 
