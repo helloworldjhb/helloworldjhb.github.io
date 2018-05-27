@@ -68,7 +68,7 @@ trusted-host=pypi.douban.com
 ```Shell
 root@jhb:~# yum install git   
 root@jhb:~# cd /home
-root@jhb:~# git clone http://git.trystack.cn/openstack-dev/devstack.git -b stable/queen
+root@jhb:~# git clone http://git.trystack.cn/openstack-dev/devstack.git -b stable/queens
 ```
 
 ## 创建stack用户
