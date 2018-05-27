@@ -66,7 +66,7 @@ trusted-host=pypi.douban.com
 安装git并下载最新版的devstack。
 
 ```Shell
-root@jhb:~# apt-get install git   
+root@jhb:~# yum install git   
 root@jhb:~# cd /home
 root@jhb:~# git clone http://git.trystack.cn/openstack-dev/devstack.git -b stable/queen
 ```
