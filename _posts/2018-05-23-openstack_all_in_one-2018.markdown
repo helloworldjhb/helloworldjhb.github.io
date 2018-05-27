@@ -135,27 +135,27 @@ SERVICE_PASSWORD=pass
 SERVICE_TOKEN=pass
 RABBIT_PASSWORD=pass
 
-HORIZON_BRANCH=stable/queen
-KEYSTONE_BRANCH=stable/queen
-NOVA_BRANCH=stable/queen
-NEUTRON_BRANCH=stable/queen
-GLANCE_BRANCH=stable/queen
-CINDER_BRANCH=stable/queen
+HORIZON_BRANCH=stable/queens
+KEYSTONE_BRANCH=stable/queens
+NOVA_BRANCH=stable/queens
+NEUTRON_BRANCH=stable/queens
+GLANCE_BRANCH=stable/queens
+CINDER_BRANCH=stable/queens
 
 
 #keystone
 KEYSTONE_TOKEN_FORMAT=UUID
 
 ##Heat
-HEAT_BRANCH=stable/queen
-enable_service h-eng h-api h-api-cfn h-api-cw
+#HEAT_BRANCH=stable/queens
+#enable_service h-eng h-api h-api-cfn h-api-cw
 
 
 ## Swift
-SWIFT_BRANCH=stable/queen
-ENABLED_SERVICES+=,s-proxy,s-object,s-container,s-account
-SWIFT_REPLICAS=1
-SWIFT_HASH=011688b44136573e209e
+#SWIFT_BRANCH=stable/queens
+#ENABLED_SERVICES+=,s-proxy,s-object,s-container,s-account
+#SWIFT_REPLICAS=1
+#SWIFT_HASH=011688b44136573e209e
 
 
 # Enabling Neutron (network) Service
