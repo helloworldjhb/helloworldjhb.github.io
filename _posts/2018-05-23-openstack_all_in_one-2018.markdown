@@ -123,7 +123,7 @@ RECLONE=True
 
 # Define images to be automatically downloaded during the DevStack built process.
 DOWNLOAD_DEFAULT_IMAGES=False
-IMAGE_URLS="http://images.trystack.cn/cirros/cirros-0.3.4-x86_64-disk.img"
+IMAGE_URLS="http://download.cirros-cloud.net/0.3.5/cirros-0.3.5-x86_64-disk.img"
 
 HOST_IP=192.168.0.15
 
