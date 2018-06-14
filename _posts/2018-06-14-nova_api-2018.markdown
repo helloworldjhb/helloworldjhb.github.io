@@ -1,0 +1,421 @@
+---
+layout: post
+
+title: "OpenStack nova-api服务启动"
+
+subtitle: ""
+
+date: 2018-06-14 23:06:00
+
+author:     "Jobin"
+header-img: "img/post-bg-2018-614.jpg"
+catalog: true
+tags:
+    - Nova-api
+---
+
+/usr/bin/nova-api的启动代码：
+
+```python
+import sys
+from nova.cmd.api import main
+
+if __name__ == "__main__":
+	sys.exit(main())
+```
+
+接着调用/nova/cmd/api.py里的main函数，代码如下：
+
+```python
+def main():
+    config.parse_args(sys.argv)
+    logging.setup(CONF, "nova")
+    utils.monkey_patch()
+    objects.register_all()
+    gmr_opts.set_defaults(CONF)
+    if 'osapi_compute' in CONF.enabled_apis:
+        # NOTE(mriedem): This is needed for caching the nova-compute service
+        # version.
+        objects.Service.enable_min_version_cache()
+    log = logging.getLogger(__name__)
+
+    gmr.TextGuruMeditation.setup_autorun(version, conf=CONF)
+
+    # launcher为oslo_service.service.ProcessLauncher对象实例
+    launcher = service.process_launcher()
+    started = 0
+    for api in CONF.enabled_apis:
+        should_use_ssl = api in CONF.enabled_ssl_apis
+        try:
+        	# server变量为nova.service.WSGIService对象实例
+        	# api为osapi_compute,在/etc/nova/nova.conf中配置
+            server = service.WSGIService(api, use_ssl=should_use_ssl)
+            # launcher调用launch_service函数，并传入server参数
+            launcher.launch_service(server, workers=server.workers or 1)
+            started += 1
+        except exception.PasteAppNotFound as ex:
+            log.warning("%s. ``enabled_apis`` includes bad values. "
+                        "Fix to remove this warning.", ex)
+
+    if started == 0:
+        log.error('No APIs were started. '
+                  'Check the enabled_apis config option.')
+        sys.exit(1)
+
+    launcher.wait()
+```
+
+/nova/service.py，主要有self.app变量和self.server变量
+
+```python
+class WSGIService(service.Service):
+    """Provides ability to launch API from a 'paste' configuration."""
+
+    def __init__(self, name, loader=None, use_ssl=False, max_url_len=None):
+        """Initialize, but do not start the WSGI server.
+
+        :param name: The name of the WSGI server given to the loader.
+        :param loader: Loads the WSGI application using the given name.
+        :returns: None
+
+        """
+        # self.name = osapi_compute
+        self.name = name
+        # NOTE(danms): Name can be metadata, osapi_compute, or ec2, per
+        # nova.service's enabled_apis
+        self.binary = 'nova-%s' % name
+        self.topic = None
+        self.manager = self._get_manager()
+        self.loader = loader or wsgi.Loader()
+        # self.app = nova.api.openstack.urlmap.URLMap
+        self.app = self.loader.load_app(name)
+        # inherit all compute_api worker counts from osapi_compute
+        if name.startswith('openstack_compute_api'):
+            wname = 'osapi_compute'
+        else:
+            wname = name
+        self.host = getattr(CONF, '%s_listen' % name, "0.0.0.0")
+        self.port = getattr(CONF, '%s_listen_port' % name, 0)
+        self.workers = (getattr(CONF, '%s_workers' % wname, None) or
+                        processutils.get_worker_count())
+        if self.workers and self.workers < 1:
+            worker_name = '%s_workers' % name
+            msg = (_("%(worker_name)s value of %(workers)s is invalid, "
+                     "must be greater than 0") %
+                   {'worker_name': worker_name,
+                    'workers': str(self.workers)})
+            raise exception.InvalidInput(msg)
+        self.use_ssl = use_ssl
+        # self.server = nova.wsgi.Server
+        self.server = wsgi.Server(name,
+                                  self.app,
+                                  host=self.host,
+                                  port=self.port,
+                                  use_ssl=self.use_ssl,
+                                  max_url_len=max_url_len)
+        # Pull back actual port used
+        self.port = self.server.port
+        self.backdoor_port = None
+        setup_profiler(name, self.host)
+```
+
+先来分析ProcessLauncher类的launch_service函数，launch_service主要调用了_start_child函数，后者又调用了 _child_process函数。
+
+```Python
+    def _start_child(self, wrap):
+        if len(wrap.forktimes) > wrap.workers:
+            # Limit ourselves to one process a second (over the period of
+            # number of workers * 1 second). This will allow workers to
+            # start up quickly but ensure we don't fork off children that
+            # die instantly too quickly.
+            if time.time() - wrap.forktimes[0] < wrap.workers:
+                LOG.info('Forking too fast, sleeping')
+                time.sleep(1)
+
+            wrap.forktimes.pop(0)
+
+        wrap.forktimes.append(time.time())
+
+        pid = os.fork()
+        if pid == 0:
+            self.launcher = self._child_process(wrap.service)
+            while True:
+                self._child_process_handle_signal()
+                status, signo = self._child_wait_for_exit_or_signal(
+                    self.launcher)
+                if not _is_sighup_and_daemon(signo):
+                    self.launcher.wait()
+                    break
+                self.launcher.restart()
+
+            os._exit(status)
+
+        LOG.debug('Started child %d', pid)
+
+        wrap.children.add(pid)
+        self.children[pid] = wrap
+
+        return pid
+
+    def launch_service(self, service, workers=1):
+        """Launch a service with a given number of workers.
+
+       :param service: a service to launch, must be an instance of
+              :class:`oslo_service.service.ServiceBase`
+       :param workers: a number of processes in which a service
+              will be running
+        """
+        _check_service_base(service)
+        wrap = ServiceWrapper(service, workers)
+
+        # Hide existing objects from the garbage collector, so that most
+        # existing pages will remain in shared memory rather than being
+        # duplicated between subprocesses in the GC mark-and-sweep. (Requires
+        # Python 3.7 or later.)
+        if hasattr(gc, 'freeze'):
+            gc.freeze()
+
+        LOG.info('Starting %d workers', wrap.workers)
+        while self.running and len(wrap.children) < wrap.workers:
+            self._start_child(wrap)
+```
+
+ _child_process函数代码如下：其中launcher为oslo_service.service.Launcher对象，并调用该对象的launch_service方法，同时传递一个service参数，该参数实际为nova.service.WSGIService对象，也就是main函数中的server变量。
+
+```python
+    def _child_process(self, service):
+        self._child_process_handle_signal()
+
+        # Reopen the eventlet hub to make sure we don't share an epoll
+        # fd with parent and/or siblings, which would be bad
+        eventlet.hubs.use_hub()
+
+        # Close write to ensure only parent has it open
+        os.close(self.writepipe)
+        # Create greenthread to watch for parent to close pipe
+        eventlet.spawn_n(self._pipe_watcher)
+
+        # Reseed random number generator
+        random.seed()
+
+        # launcher为oslo_service.service.Launcher对象
+        launcher = Launcher(self.conf, restart_method=self.restart_method)
+        # service为nova.service.WSGIService对象
+        launcher.launch_service(service)
+        return launcher
+```
+
+launch_service函数实际调用了self.services.add(service)，services实际为oslo_service.service.Services对象
+
+```python
+    def launch_service(self, service, workers=1):
+        """Load and start the given service.
+
+        :param service: The service you would like to start, must be an
+                        instance of :class:`oslo_service.service.ServiceBase`
+        :param workers: This param makes this method compatible with
+                        ProcessLauncher.launch_service. It must be None, 1 or
+                        omitted.
+        :returns: None
+
+        """
+        if workers is not None and workers != 1:
+            raise ValueError(_("Launcher asked to start multiple workers"))
+        _check_service_base(service)
+        service.backdoor_port = self.backdoor_port
+        self.services.add(service)
+```
+
+接下来看add函数，调用tg的add_thread函数，传递一个self.run_service静态方法，一个WSGIService对象和一个event.Event()对象。Services.run_service函数调用nova.service.WSGIService对象service的start()函数启动wsgi服务。
+
+```Python
+class Services(object):
+
+    def __init__(self):
+        # 保存各个WSGIService对象
+        self.services = []
+        self.tg = threadgroup.ThreadGroup()
+        self.done = event.Event()
+
+    def add(self, service):
+        """Add a service to a list and create a thread to run it.
+
+        :param service: service to run
+        """
+        self.services.append(service)
+        self.tg.add_thread(self.run_service, service, self.done)
+
+    def stop(self):
+        """Wait for graceful shutdown of services and kill the threads."""
+        for service in self.services:
+            service.stop()
+
+        # Each service has performed cleanup, now signal that the run_service
+        # wrapper threads can now die:
+        if not self.done.ready():
+            self.done.send()
+
+        # reap threads:
+        self.tg.stop()
+
+    def wait(self):
+        """Wait for services to shut down."""
+        for service in self.services:
+            service.wait()
+        self.tg.wait()
+
+    def restart(self):
+        """Reset services and start them in new threads."""
+        self.stop()
+        self.done = event.Event()
+        for restart_service in self.services:
+            restart_service.reset()
+            self.tg.add_thread(self.run_service, restart_service, self.done)
+
+    @staticmethod
+    def run_service(service, done):
+        """Service start wrapper.
+
+        :param service: service to run
+        :param done: event to wait on until a shutdown is triggered
+        :returns: None
+
+        """
+        try:
+            service.start()
+        except Exception:
+            LOG.exception('Error starting thread.')
+            raise SystemExit(1)
+        else:
+            done.wait()
+```
+
+nova.service.WSGIService.start()
+
+```python
+    def start(self):
+        """Start serving this service using loaded configuration.
+
+        Also, retrieve updated port number in case '0' was passed in, which
+        indicates a random port should be used.
+
+        :returns: None
+
+        """
+        ctxt = context.get_admin_context()
+        service_ref = objects.Service.get_by_host_and_binary(ctxt, self.host,
+                                                             self.binary)
+        if service_ref:
+            _update_service_ref(service_ref)
+        else:
+            try:
+                service_ref = _create_service_ref(self, ctxt)
+            except (exception.ServiceTopicExists,
+                    exception.ServiceBinaryExists):
+                # NOTE(danms): If we race to create a record wth a sibling,
+                # don't fail here.
+                service_ref = objects.Service.get_by_host_and_binary(
+                    ctxt, self.host, self.binary)
+
+        if self.manager:
+            self.manager.init_host()
+            self.manager.pre_start_hook()
+            if self.backdoor_port is not None:
+                self.manager.backdoor_port = self.backdoor_port
+        self.server.start()
+        if self.manager:
+            self.manager.post_start_hook()
+```
+
+nova.wsgi.Server.start()，我们看到utils.spawn(wsgi_kwargs)函数被调用，实际调用了eventlet.spawn，传递了wsgi_kwargs字典，func为eventlet.wsgi.server，site为self.app，self.app为nova.service.WSGIService.\_init\_构造函数通过self.loader.load_app(name)得到的，其中name值为osapi_compute。至此，一个作为nova-api服务的WSGI应用服务已经起来了，并且运行在一个greenthread中，将接受用户的各种请求。
+
+```python
+    def start(self):
+        """Start serving a WSGI application.
+
+        :returns: None
+        """
+        # The server socket object will be closed after server exits,
+        # but the underlying file descriptor will remain open, and will
+        # give bad file descriptor error. So duplicating the socket object,
+        # to keep file descriptor usable.
+
+        dup_socket = self._socket.dup()
+        dup_socket.setsockopt(socket.SOL_SOCKET,
+                              socket.SO_REUSEADDR, 1)
+        # sockets can hang around forever without keepalive
+        dup_socket.setsockopt(socket.SOL_SOCKET,
+                              socket.SO_KEEPALIVE, 1)
+
+        # This option isn't available in the OS X version of eventlet
+        if hasattr(socket, 'TCP_KEEPIDLE'):
+            dup_socket.setsockopt(socket.IPPROTO_TCP,
+                                  socket.TCP_KEEPIDLE,
+                                  CONF.wsgi.tcp_keepidle)
+
+        if self._use_ssl:
+            try:
+                ca_file = CONF.wsgi.ssl_ca_file
+                cert_file = CONF.wsgi.ssl_cert_file
+                key_file = CONF.wsgi.ssl_key_file
+
+                if cert_file and not os.path.exists(cert_file):
+                    raise RuntimeError(
+                          _("Unable to find cert_file : %s") % cert_file)
+
+                if ca_file and not os.path.exists(ca_file):
+                    raise RuntimeError(
+                          _("Unable to find ca_file : %s") % ca_file)
+
+                if key_file and not os.path.exists(key_file):
+                    raise RuntimeError(
+                          _("Unable to find key_file : %s") % key_file)
+
+                if self._use_ssl and (not cert_file or not key_file):
+                    raise RuntimeError(
+                          _("When running server in SSL mode, you must "
+                            "specify both a cert_file and key_file "
+                            "option value in your configuration file"))
+                ssl_kwargs = {
+                    'server_side': True,
+                    'certfile': cert_file,
+                    'keyfile': key_file,
+                    'cert_reqs': ssl.CERT_NONE,
+                }
+
+                if CONF.wsgi.ssl_ca_file:
+                    ssl_kwargs['ca_certs'] = ca_file
+                    ssl_kwargs['cert_reqs'] = ssl.CERT_REQUIRED
+
+                dup_socket = eventlet.wrap_ssl(dup_socket,
+                                               **ssl_kwargs)
+            except Exception:
+                with excutils.save_and_reraise_exception():
+                    LOG.error(_LE("Failed to start %(name)s on %(host)s"
+                                  ":%(port)s with SSL support"),
+                              {'name': self.name, 'host': self.host,
+                               'port': self.port})
+
+        wsgi_kwargs = {
+            'func': eventlet.wsgi.server,
+            'sock': dup_socket,
+            'site': self.app,
+            'protocol': self._protocol,
+            'custom_pool': self._pool,
+            'log': self._logger,
+            'log_format': CONF.wsgi.wsgi_log_format,
+            'debug': False,
+            'keepalive': CONF.wsgi.keep_alive,
+            'socket_timeout': self.client_socket_timeout
+            }
+
+        if self._max_url_len:
+            wsgi_kwargs['url_length_limit'] = self._max_url_len
+
+        self._server = utils.spawn(**wsgi_kwargs)
+```
+
+
+
+
+
