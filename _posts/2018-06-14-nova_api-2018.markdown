@@ -415,6 +415,721 @@ nova.wsgi.Server.start()，我们看到utils.spawn(wsgi_kwargs)函数被调用�
         self._server = utils.spawn(**wsgi_kwargs)
 ```
 
+Nova-api实现的是wsgi的Application，而不是Server，Server是由wsgi库来实现的，就是func:eventlet.wsgi.server，Application如何被调用呢？此时可以想到eventlet.spawn被调用时传入的那个site值，它是在nova.service.WSGIService.\__init__构造函数中通过self.loader.load_app(name)得到的，name为“osapi_compute”，self.loader为wsgi.Loader实例，load_app调用了nova.wsgi.Loader.load_app()中的deploy.loadapp()，传入参数为：config:/etc/nova/api-paste.ini和name=osapi_compute。
+
+/nova/service.py
+
+```python
+class WSGIService(service.Service):
+    """Provides ability to launch API from a 'paste' configuration."""
+
+    def __init__(self, name, loader=None, use_ssl=False, max_url_len=None):
+        """Initialize, but do not start the WSGI server.
+
+        :param name: The name of the WSGI server given to the loader.
+        :param loader: Loads the WSGI application using the given name.
+        :returns: None
+
+        """
+        # self.name = osapi_compute
+        self.name = name
+        # NOTE(danms): Name can be metadata, osapi_compute, or ec2, per
+        # nova.service's enabled_apis
+        self.binary = 'nova-%s' % name
+        self.topic = None
+        self.manager = self._get_manager()
+        self.loader = loader or wsgi.Loader()
+        # self.app = nova.api.openstack.urlmap.URLMap
+        self.app = self.loader.load_app(name)
+        # inherit all compute_api worker counts from osapi_compute
+        if name.startswith('openstack_compute_api'):
+            wname = 'osapi_compute'
+        else:
+            wname = name
+        self.host = getattr(CONF, '%s_listen' % name, "0.0.0.0")
+        self.port = getattr(CONF, '%s_listen_port' % name, 0)
+        self.workers = (getattr(CONF, '%s_workers' % wname, None) or
+                        processutils.get_worker_count())
+        if self.workers and self.workers < 1:
+            worker_name = '%s_workers' % name
+            msg = (_("%(worker_name)s value of %(workers)s is invalid, "
+                     "must be greater than 0") %
+                   {'worker_name': worker_name,
+                    'workers': str(self.workers)})
+            raise exception.InvalidInput(msg)
+        self.use_ssl = use_ssl
+        # self.server = nova.wsgi.Server
+        self.server = wsgi.Server(name,
+                                  self.app,
+                                  host=self.host,
+                                  port=self.port,
+                                  use_ssl=self.use_ssl,
+                                  max_url_len=max_url_len)
+        # Pull back actual port used
+        self.port = self.server.port
+        self.backdoor_port = None
+        setup_profiler(name, self.host)
+```
+
+/nova/wsgi.py
+
+```Python
+class Loader(object):
+    """Used to load WSGI applications from paste configurations."""
+
+    def __init__(self, config_path=None):
+        """Initialize the loader, and attempt to find the config.
+
+        :param config_path: Full or relative path to the paste config.
+        :returns: None
+
+        """
+        self.config_path = None
+
+        config_path = config_path or CONF.wsgi.api_paste_config
+        if not os.path.isabs(config_path):
+            self.config_path = CONF.find_file(config_path)
+        elif os.path.exists(config_path):
+            self.config_path = config_path
+
+        if not self.config_path:
+            raise exception.ConfigNotFound(path=config_path)
+
+    def load_app(self, name):
+        """Return the paste URLMap wrapped WSGI application.
+
+        :param name: Name of the application to load.
+        :returns: Paste URLMap object wrapping the requested application.
+        :raises: `nova.exception.PasteAppNotFound`
+
+        """
+        try:
+            LOG.debug("Loading app %(name)s from %(path)s",
+                      {'name': name, 'path': self.config_path})
+            return deploy.loadapp("config:%s" % self.config_path, name=name)
+        except LookupError:
+            LOG.exception(_LE("Couldn't lookup app: %s"), name)
+            raise exception.PasteAppNotFound(name=name, path=self.config_path)
+```
+
+再看下deploy.loadapp都调用了哪些函数，从下面pdb调试调试代码中，可以看到函数接收的三个参数，分别为loader,global_conf和local_conf。
+
+```python
+(Pdb) l 148,163
+148
+149
+150  	def urlmap_factory(loader, global_conf, **local_conf):
+151  	    if 'not_found_app' in local_conf:
+152  	        not_found_app = local_conf.pop('not_found_app')
+153  	    else:
+154  	        not_found_app = global_conf.get('not_found_app')
+155  	    if not_found_app:
+156  	        not_found_app = loader.get_app(not_found_app, global_conf=global_conf)
+157  	    urlmap = URLMap(not_found_app=not_found_app)
+158  	    for path, app_name in local_conf.items():
+159  	        path = paste.urlmap.parse_path_expression(path)
+160  	        app = loader.get_app(app_name, global_conf=global_conf)
+161  	        urlmap[path] = app
+162  	    import pdb
+163  	    pdb.set_trace()
+(Pdb) p loader
+<paste.deploy.loadwsgi.ConfigLoader object at 0x7f5fe4d71f50>
+(Pdb) p local_conf
+{'/v2': 'openstack_compute_api_v21_legacy_v2_compatible', '/v2.1': 'openstack_compute_api_v21', '/': 'oscomputeversions'}
+(Pdb) p urlmap
+<nova.api.openstack.urlmap.URLMap object at 0x7f5fe4d80650>
+(Pdb) p global_conf
+{'__file__': '/etc/nova/api-paste.ini', 'here': '/etc/nova'}
+```
+
+进一步分析/etc/nova/api-paste.ini，如下所示：
+
+```python
+############
+# Metadata #
+############
+[composite:metadata]
+use = egg:Paste#urlmap
+/: meta
+
+[pipeline:meta]
+pipeline = cors metaapp
+
+[app:metaapp]
+paste.app_factory = nova.api.metadata.handler:MetadataRequestHandler.factory
+
+#############
+# OpenStack #
+#############
+
+[composite:osapi_compute]
+use = call:nova.api.openstack.urlmap:urlmap_factory
+/: oscomputeversions
+# v21 is an exactly feature match for v2, except it has more stringent
+# input validation on the wsgi surface (prevents fuzzing early on the
+# API). It also provides new features via API microversions which are
+# opt into for clients. Unaware clients will receive the same frozen
+# v2 API feature set, but with some relaxed validation
+/v2: openstack_compute_api_v21_legacy_v2_compatible
+/v2.1: openstack_compute_api_v21
+
+[composite:openstack_compute_api_v21]
+use = call:nova.api.auth:pipeline_factory_v21
+noauth2 = cors http_proxy_to_wsgi compute_req_id faultwrap request_log sizelimit osprofiler noauth2 osapi_compute_app_v21
+keystone = cors http_proxy_to_wsgi compute_req_id faultwrap request_log sizelimit osprofiler authtoken keystonecontext osapi_compute_app_v21
+
+[composite:openstack_compute_api_v21_legacy_v2_compatible]
+use = call:nova.api.auth:pipeline_factory_v21
+noauth2 = cors http_proxy_to_wsgi compute_req_id faultwrap request_log sizelimit osprofiler noauth2 legacy_v2_compatible osapi_compute_app_v21
+keystone = cors http_proxy_to_wsgi compute_req_id faultwrap request_log sizelimit osprofiler authtoken keystonecontext legacy_v2_compatible osapi_compute_app_v21
+
+[filter:request_log]
+paste.filter_factory = nova.api.openstack.requestlog:RequestLog.factory
+
+[filter:compute_req_id]
+paste.filter_factory = nova.api.compute_req_id:ComputeReqIdMiddleware.factory
+
+[filter:faultwrap]
+paste.filter_factory = nova.api.openstack:FaultWrapper.factory
+
+[filter:noauth2]
+paste.filter_factory = nova.api.openstack.auth:NoAuthMiddleware.factory
+
+[filter:osprofiler]
+paste.filter_factory = nova.profiler:WsgiMiddleware.factory
+
+[filter:sizelimit]
+paste.filter_factory = oslo_middleware:RequestBodySizeLimiter.factory
+
+[filter:http_proxy_to_wsgi]
+paste.filter_factory = oslo_middleware.http_proxy_to_wsgi:HTTPProxyToWSGI.factory
+
+[filter:legacy_v2_compatible]
+paste.filter_factory = nova.api.openstack:LegacyV2CompatibleWrapper.factory
+
+[app:osapi_compute_app_v21]
+paste.app_factory = nova.api.openstack.compute:APIRouterV21.factory
+
+[pipeline:oscomputeversions]
+pipeline = cors faultwrap request_log http_proxy_to_wsgi oscomputeversionapp
+
+[app:oscomputeversionapp]
+paste.app_factory = nova.api.openstack.compute.versions:Versions.factory
+
+##########
+# Shared #
+##########
+
+[filter:cors]
+paste.filter_factory = oslo_middleware.cors:filter_factory
+oslo_config_project = nova
+
+[filter:keystonecontext]
+paste.filter_factory = nova.api.auth:NovaKeystoneContext.factory
+
+[filter:authtoken]
+paste.filter_factory = keystonemiddleware.auth_token:filter_factory
+```
+
+根据deploy.loadapp传入的osapi_compute可以找到[composite:osapi_compute]，依次找到urlmap_factory函数。下面以请求路径/v2为例子进行说明，其对应的app为openstack_compute_api_v21_legacy_v2_compatible，又依次找到osapi_compute_app_v21，最后找到了nova.api.openstack.compute:APIRouterV21.factory，调用该函数获取一个app，这一系列的调用关系是在nova.api.openstack.urlmap.urlmap_factory函数里面通过loader.get_app()调用实现的，如下所示，这里的loader的类型为paste.deploy.loadwsgi.ConfigLoader。
+
+/nova/api/openstack/urlmap.py
+
+```Python
+def urlmap_factory(loader, global_conf, **local_conf):
+    if 'not_found_app' in local_conf:
+        not_found_app = local_conf.pop('not_found_app')
+    else:
+        not_found_app = global_conf.get('not_found_app')
+    if not_found_app:
+        not_found_app = loader.get_app(not_found_app, global_conf=global_conf)
+    urlmap = URLMap(not_found_app=not_found_app)
+    for path, app_name in local_conf.items():
+        path = paste.urlmap.parse_path_expression(path)
+        app = loader.get_app(app_name, global_conf=global_conf)
+        urlmap[path] = app
+    return urlmap
+```
+
+我们来看一下nova.api.openstack.compute:APIRouterV21这个类,
+
+/nova/api/openstack/compute/routes.py
+
+```Python
+class APIRouterV21(base_wsgi.Router):
+    """Routes requests on the OpenStack API to the appropriate controller
+    and method. The URL mapping based on the plain list `ROUTE_LIST` is built
+    at here.
+    """
+    def __init__(self, custom_routes=None):
+        """:param custom_routes: the additional routes can be added by this
+               parameter. This parameter is used to test on some fake routes
+               primarily.
+        """
+        super(APIRouterV21, self).__init__(nova.api.openstack.ProjectMapper())
+
+        if custom_routes is None:
+            custom_routes = tuple()
+
+        for path, methods in ROUTE_LIST + custom_routes:
+            # NOTE(alex_xu): The variable 'methods' is a dict in normal, since
+            # the dict includes all the methods supported in the path. But
+            # if the variable 'method' is a string, it means a redirection.
+            # For example, the request to the '' will be redirect to the '/' in
+            # the Nova API. To indicate that, using the target path instead of
+            # a dict. The route entry just writes as "('', '/)".
+            if isinstance(methods, str):
+                self.map.redirect(path, methods)
+                continue
+
+            for method, controller_info in methods.items():
+                # TODO(alex_xu): In the end, I want to create single controller
+                # instance instead of create controller instance for each
+                # route.
+                controller = controller_info[0]()
+                action = controller_info[1]
+                self.map.create_route(path, method, controller, action)
+
+    @classmethod
+    def factory(cls, global_config, **local_config):
+        """Simple paste factory, :class:`nova.wsgi.Router` doesn't have one."""
+        return cls()
+```
+
+nova.api.openstack.compute:APIRouterV21类中有个self.map变量，为nova.api.openstack.ProjectMapper()类实例，该map变量作为参数传递给APIRouterV21的基类nova.wsgi.Router，下面看下该基类：
+
+```python
+class Router(object):
+    """WSGI middleware that maps incoming requests to WSGI apps."""
+
+    def __init__(self, mapper):
+        """Create a router for the given routes.Mapper.
+
+        Each route in `mapper` must specify a 'controller', which is a
+        WSGI app to call.  You'll probably want to specify an 'action' as
+        well and have your controller be an object that can route
+        the request to the action-specific method.
+
+        Examples:
+          mapper = routes.Mapper()
+          sc = ServerController()
+
+          # Explicit mapping of one route to a controller+action
+          mapper.connect(None, '/svrlist', controller=sc, action='list')
+
+          # Actions are all implicitly defined
+          mapper.resource('server', 'servers', controller=sc)
+
+          # Pointing to an arbitrary WSGI app.  You can specify the
+          # {path_info:.*} parameter so the target app can be handed just that
+          # section of the URL.
+          mapper.connect(None, '/v1.0/{path_info:.*}', controller=BlogApp())
+
+        """
+        self.map = mapper
+        self._router = routes.middleware.RoutesMiddleware(self._dispatch,
+                                                          self.map)
+
+    @webob.dec.wsgify(RequestClass=Request)
+    def __call__(self, req):
+        """Route the incoming request to a controller based on self.map.
+
+        If no match, return a 404.
+
+        """
+        return self._router
+
+    @staticmethod
+    @webob.dec.wsgify(RequestClass=Request)
+    def _dispatch(req):
+        """Dispatch the request to the appropriate controller.
+
+        Called by self._router after matching the incoming request to a route
+        and putting the information into req.environ.  Either returns 404
+        or the routed WSGI app's response.
+
+        """
+        match = req.environ['wsgiorg.routing_args'][1]
+        if not match:
+            return webob.exc.HTTPNotFound()
+        app = match['controller']
+        return app
+```
+
+在基类的______init______()函数中，调用了routes.middleware.RoutesMiddleware()函数，这个map当做参数传递，同时作为参数的还有wsgi.Router的静态函数\_dispatch()，返回值赋值给self.\_router变量。nova.wsgi.Router类有个______call__函数，当wsgi请求到来时，webob会调用到这个函数，函数将变量self.\_router变量返回。\_dispatch函数将被调用，这个函数返回一个对应的app，这个app类型为nova.api.openstack.wsgi.Resource，\_dispatch函数被调用时，通过pdb可以跟踪其局部变量的类型和值，下面以请求获取云主机detail方法为例说明，match变量是一个字典，action值为“detail”，controller值为nova.api.openstack.wsgi.Resource对象，还有一个project_id。
+
+```shell
+# 首先pdb打断点，执行/usr/bin/nova-api开启api服务监听8774端口
+# 其次执行查询云主机详细信息请求：
+curl -i 'http://192.168.158.10:8774/v2.1/1e12b1b23b7c4f2ba59a36d8484726ea/servers/detail' -H "X-Auth-Token:b3b139fa551d4fc2b537ecfe929b2e0b"
+```
+
+```python
+> /opt/stack/nova/nova/wsgi.py(461)_dispatch()
+-> if not match:
+(Pdb) l
+456
+457  	        """
+458  	        import pdb
+459  	        match = req.environ['wsgiorg.routing_args'][1]
+460  	        pdb.set_trace()
+461  ->	        if not match:
+462  	            return webob.exc.HTTPNotFound()
+463  	        app = match['controller']
+464  	        return app
+465
+466
+(Pdb) p match
+{'action': u'detail', 'controller': <nova.api.openstack.wsgi.Resource object at 0x7faed6d02150>, 'project_id': u'1e12b1b23b7c4f2ba59a36d8484726ea'}
+(Pdb) n
+> /opt/stack/nova/nova/wsgi.py(463)_dispatch()
+-> app = match['controller']
+(Pdb) n
+> /opt/stack/nova/nova/wsgi.py(464)_dispatch()
+-> return app
+(Pdb) p app
+<nova.api.openstack.wsgi.Resource object at 0x7faed6d02150>
+(Pdb)
+```
+
+作为一个wsgi的app，nova.api.openstack.wsgi.Resource类实现了\_\_call\_\_方法，该方法接着会被调用，如下所示：Resource的\_\_call\_\_函数调用\_process_stack函数，后者又调用dispatch函数，dispatch函数调用了被当做参数传进来的method函数，这个函数就是nova.api.openstack.compute.servers.ServersController.detail函数。
+
+```python
+DEBUG nova.api.openstack.wsgi [None req-280c619c-050a-4a9d-adea-a51cede2e312 admin admin] Calling method '<bound method ServersController.detail of <nova.api.openstack.compute.servers.ServersController object at 0x7f679488a910>>' {{(pid=111232) _process_stack /opt/stack/nova/nova/api/openstack/wsgi.py:607}}
+> /opt/stack/nova/nova/api/openstack/wsgi.py(727)dispatch()
+-> return method(req=request, **action_args)
+(Pdb) l
+722  	        """Dispatch a call to the action-specific method."""
+723
+724  	        try:
+725  	            import pdb
+726  	            pdb.set_trace()
+727  ->	            return method(req=request, **action_args)
+728  	        except exception.VersionNotFoundForAPIMethod:
+729  	            # We deliberately don't return any message information
+730  	            # about the exception to the user so it looks as if
+731  	            # the method is simply not implemented.
+732  	            return Fault(webob.exc.HTTPNotFound())
+(Pdb) p method
+<bound method ServersController.detail of <nova.api.openstack.compute.servers.ServersController object at 0x7f679488a910>>
+(Pdb) p request
+<Request at 0x7f6794486c90 GET http://192.168.158.10:8774/v2.1/1e12b1b23b7c4f2ba59a36d8484726ea/servers/detail>
+(Pdb)
+```
+
+/nova/api/openstack/wsgi.py
+
+```python
+class Resource(wsgi.Application):
+    """WSGI app that handles (de)serialization and controller dispatch.
+
+    WSGI app that reads routing information supplied by RoutesMiddleware
+    and calls the requested action method upon its controller.  All
+    controller action methods must accept a 'req' argument, which is the
+    incoming wsgi.Request. If the operation is a PUT or POST, the controller
+    method must also accept a 'body' argument (the deserialized request body).
+    They may raise a webob.exc exception or return a dict, which will be
+    serialized by requested content type.
+
+    Exceptions derived from webob.exc.HTTPException will be automatically
+    wrapped in Fault() to provide API friendly error responses.
+
+    """
+    ......
+    @webob.dec.wsgify(RequestClass=Request)
+    def __call__(self, request):
+        """WSGI method that controls (de)serialization and method dispatch."""
+
+        if self.support_api_request_version:
+            # Set the version of the API requested based on the header
+            try:
+                request.set_api_version_request()
+            except exception.InvalidAPIVersionString as e:
+                return Fault(webob.exc.HTTPBadRequest(
+                    explanation=e.format_message()))
+            except exception.InvalidGlobalAPIVersion as e:
+                return Fault(webob.exc.HTTPNotAcceptable(
+                    explanation=e.format_message()))
+
+        # Identify the action, its arguments, and the requested
+        # content type
+        action_args = self.get_action_args(request.environ)
+        action = action_args.pop('action', None)
+
+        # NOTE(sdague): we filter out InvalidContentTypes early so we
+        # know everything is good from here on out.
+        try:
+            content_type, body = self.get_body(request)
+            accept = request.best_match_content_type()
+        except exception.InvalidContentType:
+            msg = _("Unsupported Content-Type")
+            return Fault(webob.exc.HTTPUnsupportedMediaType(explanation=msg))
+
+        # NOTE(Vek): Splitting the function up this way allows for
+        #            auditing by external tools that wrap the existing
+        #            function.  If we try to audit __call__(), we can
+        #            run into troubles due to the @webob.dec.wsgify()
+        #            decorator.
+        return self._process_stack(request, action, action_args,
+                               content_type, body, accept)
+
+    def _process_stack(self, request, action, action_args,
+                       content_type, body, accept):
+        """Implement the processing stack."""
+
+        # Get the implementing method
+        try:
+            meth, extensions = self.get_method(request, action,
+                                               content_type, body)
+        except (AttributeError, TypeError):
+            return Fault(webob.exc.HTTPNotFound())
+        except KeyError as ex:
+            msg = _("There is no such action: %s") % ex.args[0]
+            return Fault(webob.exc.HTTPBadRequest(explanation=msg))
+        except exception.MalformedRequestBody:
+            msg = _("Malformed request body")
+            return Fault(webob.exc.HTTPBadRequest(explanation=msg))
+
+        if body:
+            msg = _("Action: '%(action)s', calling method: %(meth)s, body: "
+                    "%(body)s") % {'action': action,
+                                   'body': six.text_type(body, 'utf-8'),
+                                   'meth': str(meth)}
+            LOG.debug(strutils.mask_password(msg))
+        else:
+            LOG.debug("Calling method '%(meth)s'",
+                      {'meth': str(meth)})
+
+        # Now, deserialize the request body...
+        try:
+            contents = self._get_request_content(body, request)
+        except exception.MalformedRequestBody:
+            msg = _("Malformed request body")
+            return Fault(webob.exc.HTTPBadRequest(explanation=msg))
+
+        # Update the action args
+        action_args.update(contents)
+
+        project_id = action_args.pop("project_id", None)
+        context = request.environ.get('nova.context')
+        if (context and project_id and (project_id != context.project_id)):
+            msg = _("Malformed request URL: URL's project_id '%(project_id)s'"
+                    " doesn't match Context's project_id"
+                    " '%(context_project_id)s'") % \
+                    {'project_id': project_id,
+                     'context_project_id': context.project_id}
+            return Fault(webob.exc.HTTPBadRequest(explanation=msg))
+
+        response = None
+        try:
+            with ResourceExceptionHandler():
+                action_result = self.dispatch(meth, request, action_args)
+        except Fault as ex:
+            response = ex
+
+        if not response:
+            # No exceptions; convert action_result into a
+            # ResponseObject
+            resp_obj = None
+            if type(action_result) is dict or action_result is None:
+                resp_obj = ResponseObject(action_result)
+            elif isinstance(action_result, ResponseObject):
+                resp_obj = action_result
+            else:
+                response = action_result
+
+            # Run post-processing extensions
+            if resp_obj:
+                # Do a preserialize to set up the response object
+                if hasattr(meth, 'wsgi_code'):
+                    resp_obj._default_code = meth.wsgi_code
+                # Process extensions
+                response = self.process_extensions(extensions, resp_obj,
+                                                        request, action_args)
+
+            if resp_obj and not response:
+                response = resp_obj.serialize(request, accept)
+
+        if hasattr(response, 'headers'):
+            for hdr, val in list(response.headers.items()):
+                if six.PY2:
+                    # In Py2.X Headers must be byte strings
+                    response.headers[hdr] = utils.utf8(val)
+                else:
+                    # In Py3.X Headers must be utf-8 strings
+                    response.headers[hdr] = encodeutils.safe_decode(
+                            utils.utf8(val))
+
+            if not request.api_version_request.is_null():
+                response.headers[API_VERSION_REQUEST_HEADER] = \
+                    'compute ' + request.api_version_request.get_string()
+                response.headers[LEGACY_API_VERSION_REQUEST_HEADER] = \
+                    request.api_version_request.get_string()
+                response.headers.add('Vary', API_VERSION_REQUEST_HEADER)
+                response.headers.add('Vary', LEGACY_API_VERSION_REQUEST_HEADER)
+
+        return response
+    ......
+        def _get_method(self, request, action, content_type, body):
+        """Look up the action-specific method and its extensions."""
+        # Look up the method
+        try:
+            if not self.controller:
+                meth = getattr(self, action)
+            else:
+                meth = getattr(self.controller, action)
+        except AttributeError:
+            if (not self.wsgi_actions or
+                    action not in _ROUTES_METHODS + ['action']):
+                # Propagate the error
+                raise
+        else:
+            return meth, self.wsgi_extensions.get(action, [])
+
+        if action == 'action':
+            action_name = action_peek(body)
+        else:
+            action_name = action
+
+        # Look up the action method
+        return (self.wsgi_actions[action_name],
+                self.wsgi_action_extensions.get(action_name, []))
+
+    def dispatch(self, method, request, action_args):
+        """Dispatch a call to the action-specific method."""
+
+        try:
+            return method(req=request, **action_args)
+        except exception.VersionNotFoundForAPIMethod:
+            # We deliberately don't return any message information
+            # about the exception to the user so it looks as if
+            # the method is simply not implemented.
+            return Fault(webob.exc.HTTPNotFound())
+```
+
+nova.api.openstack.compute.server.ServersController
+
+```python
+class ServersController(wsgi.Controller):
+    """The Server API base controller class for the OpenStack API."""
+    ......
+    def __init__(self, **kwargs):
+
+        super(ServersController, self).__init__(**kwargs)
+        self.compute_api = compute.API()
+
+        # TODO(alex_xu): The final goal is that merging all of
+        # extended json-schema into server main json-schema.
+        self._create_schema(self.schema_server_create_v257, '2.57')
+        self._create_schema(self.schema_server_create_v252, '2.52')
+        self._create_schema(self.schema_server_create_v242, '2.42')
+        self._create_schema(self.schema_server_create_v237, '2.37')
+        self._create_schema(self.schema_server_create_v232, '2.32')
+        self._create_schema(self.schema_server_create_v219, '2.19')
+        self._create_schema(self.schema_server_create, '2.1')
+        self._create_schema(self.schema_server_create_v20, '2.0')
+    ......
+    @wsgi.expected_errors((400, 403))
+    @validation.query_schema(schema_servers.query_params_v226, '2.26')
+    @validation.query_schema(schema_servers.query_params_v21, '2.1', '2.25')
+    def detail(self, req):
+        """Returns a list of server details for a given user."""
+        context = req.environ['nova.context']
+        context.can(server_policies.SERVERS % 'detail')
+        try:
+            servers = self._get_servers(req, is_detail=True)
+        except exception.Invalid as err:
+            raise exc.HTTPBadRequest(explanation=err.format_message())
+        return servers
+    ......
+```
+
+nova.api.openstack.compute.servers.ServersController的detail函数是怎么找到的呢？在Resource类的\_process_stack函数中，调用dispatch函数之前，调用了get_method函数，get_method函数又调用了\_get\_method函数,\_get_method函数中有meth = getattr(self.controller, action)，这里的self.controller就是Resource类实例中聚合nova.api.openstack.compute.servers.ServersController对象，action就是detail函数，getattr返回的meth就是一个函数<bound method ServersController.detail of <nova.api.openstack.compute.servers.ServersController object at 0x7fa29e7967d0>>，\_process_stack再将这个meth作为参数传递给dispatch，在diapatch中真正调用了nova.api.openstack.compute.servers.ServersController的detail函数。
+
+
+
+我们再看下nova.api.openstack.compute.servers.ServersController的\_\_init\_\_构造函数。在构造函数中有一行代码:self.compute_api = compute.API()，compute.API()通过调用importutils.import_object返回一个类对象，这个类对象的类型为nova.compute.api.API。
+
+```python
+> /opt/stack/nova/nova/compute/__init__.py(41)API()
+-> return importutils.import_object(class_name, *args, **kwargs)
+(Pdb) l
+ 36
+ 37  	def API(*args, **kwargs):
+ 38  	    class_name = _get_compute_api_class_name()
+ 39  	    import pdb
+ 40  	    pdb.set_trace()
+ 41  ->	    return importutils.import_object(class_name, *args, **kwargs)
+ 42
+ 43
+ 44  	def HostAPI(*args, **kwargs):
+ 45  	    """Returns the 'HostAPI' class from the same module as the configured
+ 46  	    compute api
+(Pdb) p class_name
+'nova.compute.api.API'
+(Pdb)
+```
+
+nova.compute.api.API类如下所示：nova.compute.api.API类聚合了很多对象，可以得知，nova.api.openstack.compute.servers.ServersController类的很多操作都通过nova.compute.api.API来完成。
+
+```Python
+> /opt/stack/nova/nova/compute/api.py(273)__init__()->None
+-> pdb.set_trace()
+(Pdb) l 245,275
+245  	@profiler.trace_cls("compute_api")
+246  	class API(base.Base):
+247  	    """API for interacting with the compute manager."""
+248
+249  	    def __init__(self, image_api=None, network_api=None, volume_api=None,
+250  	                 security_group_api=None, **kwargs):
+251  	        self.image_api = image_api or image.API()
+252  	        self.network_api = network_api or network.API()
+253  	        self.volume_api = volume_api or cinder.API()
+254  	        # NOTE(mriedem): This looks a bit weird but we get the reportclient
+255  	        # via SchedulerClient since it lazy-loads SchedulerReportClient on
+256  	        # the first usage which helps to avoid a bunch of lockutils spam in
+257  	        # the nova-api logs every time the service is restarted (remember
+258  	        # that pretty much all of the REST API controllers construct this
+259  	        # API class).
+260  	        self.placementclient = scheduler_client.SchedulerClient().reportclient
+261  	        self.security_group_api = (security_group_api or
+262  	            openstack_driver.get_openstack_security_group_driver())
+263  	        self.consoleauth_rpcapi = consoleauth_rpcapi.ConsoleAuthAPI()
+264  	        self.compute_rpcapi = compute_rpcapi.ComputeAPI()
+265  	        self.compute_task_api = conductor.ComputeTaskAPI()
+266  	        self.servicegroup_api = servicegroup.API()
+267  	        self.notifier = rpc.get_notifier('compute', CONF.host)
+268  	        if CONF.ephemeral_storage_encryption.enabled:
+269  	            self.key_manager = key_manager.API()
+270
+271  	        super(API, self).__init__(**kwargs)
+272  	        import pdb
+273  ->	        pdb.set_trace()
+274
+275  	    @property
+(Pdb) p self.image_api
+<nova.image.api.API object at 0x7f9c7613d590>
+(Pdb) p self.network_api
+<nova.network.neutronv2.api.API object at 0x7f9c7613d5d0>
+(Pdb) p self.volume_api
+<nova.volume.cinder.API object at 0x7f9c760984d0>
+(Pdb) p self.security_group_api
+<nova.network.security_group.neutron_driver.SecurityGroupAPI object at 0x7f9c76098190>
+(Pdb) p self.compute_rpcapi
+<nova.compute.rpcapi.ComputeAPI object at 0x7f9c7612efd0>
+(Pdb) p self.servicegroup_api
+<nova.servicegroup.api.API object at 0x7f9c76098590>
+(Pdb) p self.notifier
+<nova.rpc.LegacyValidatingNotifier object at 0x7f9c76098e90>
+(Pdb)
+```
+
+
+
+
+
+
+
 
 
 
