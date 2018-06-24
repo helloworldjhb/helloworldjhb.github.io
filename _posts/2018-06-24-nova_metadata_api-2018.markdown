@@ -1,8 +1,7 @@
-```
 ---
 layout: post
 
-title: "OpenStack metadata服务机"
+title: "OpenStack metadata服务机制"
 
 subtitle: ""
 
@@ -14,7 +13,6 @@ catalog: true
 tags:
     - Nova-metadata-api
 ---
-```
 
 # metadata概念
 
