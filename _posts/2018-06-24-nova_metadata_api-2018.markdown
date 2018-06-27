@@ -74,11 +74,11 @@ metadata请求发送流程中第一步过程
 
 ​	虚拟机所在subnet连接到了路由器上，则发往169.254.169.254的报文会被发至router，neutron通过router所在网络命名空间添加iptables规则，将该报文转发至9697端口。
 
-![img1](https://github.com/helloworldjhb/helloworldjhb.github.io/blob/master/img/nova-api-metadata/img1.png)
+![img1](https://helloworldjhb.github.io/img/nova-api-metadata/img1.png)
 
 ​	监听在9697端口上的neutron-ns-metadata-proxy服务，该服务获取请求报文，进而进入上述流程图中的后续处理和转发流程
 
-![img2](https://github.com/helloworldjhb/helloworldjhb.github.io/blob/master/img/nova-api-metadata/img2.png)
+![img2](https://helloworldjhb.github.io/img/nova-api-metadata/img2.png)
 
 （2）通过dhcp发送请求
 
