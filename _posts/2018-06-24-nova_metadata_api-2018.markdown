@@ -56,7 +56,7 @@ tags:
 
 ### metadata请求发送流程
 
-![metadata](/Users/jobin/Desktop/metadata.png)
+![metadata](https://github.com/helloworldjhb/helloworldjhb.github.io/blob/master/img/nova-api-metadata/metadata.png)
 
 Step1: instance启动的时候会发起http请求到metadata service，地址为"http://169.254.169.254:80"；请求被发送至neutron-ns-metadata-proxy，此时会在请求中添加router-id和network-id；
 
@@ -74,11 +74,11 @@ metadata请求发送流程中第一步过程
 
 ​	虚拟机所在subnet连接到了路由器上，则发往169.254.169.254的报文会被发至router，neutron通过router所在网络命名空间添加iptables规则，将该报文转发至9697端口。
 
-![屏幕快照 2018-06-24 下午5.02.29](/Users/jobin/Desktop/屏幕快照 2018-06-24 下午5.02.29.png)
+![img1](https://github.com/helloworldjhb/helloworldjhb.github.io/blob/master/img/nova-api-metadata/img1.png)
 
 ​	监听在9697端口上的neutron-ns-metadata-proxy服务，该服务获取请求报文，进而进入上述流程图中的后续处理和转发流程
 
-![屏幕快照 2018-06-24 下午4.57.44](/Users/jobin/Desktop/屏幕快照 2018-06-24 下午4.57.44.png)
+![img2](https://github.com/helloworldjhb/helloworldjhb.github.io/blob/master/img/nova-api-metadata/img2.png)
 
 （2）通过dhcp发送请求
 
