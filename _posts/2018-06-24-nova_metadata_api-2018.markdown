@@ -56,7 +56,7 @@ tags:
 
 ### metadata请求发送流程
 
-![metadata](https://github.com/helloworldjhb/helloworldjhb.github.io/blob/master/img/nova-api-metadata/metadata.png)
+![metadata]([helloworldjhb.github.io](https://github.com/helloworldjhb/helloworldjhb.github.io)/[img](https://github.com/helloworldjhb/helloworldjhb.github.io/tree/master/img)/[nova-api-metadata](https://github.com/helloworldjhb/helloworldjhb.github.io/tree/master/img/nova-api-metadata)/**metadata.png**)
 
 Step1: instance启动的时候会发起http请求到metadata service，地址为"http://169.254.169.254:80"；请求被发送至neutron-ns-metadata-proxy，此时会在请求中添加router-id和network-id；
 
