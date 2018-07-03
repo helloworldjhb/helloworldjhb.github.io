@@ -696,7 +696,7 @@ class APIRouterV21(base_wsgi.Router):
         return cls()
 ```
 
-nova.api.openstack.compute:APIRouterV21类中有个self.map变量，为nova.api.openstack.ProjectMapper()类实例，该map变量作为参数传递给APIRouterV21的基类nova.wsgi.Router，下面看下该基类：
+nova.api.openstack.compute.routes.py:APIRouterV21类中有个self.map变量，为nova.api.openstack.\_\_init\_\_.py.ProjectMapper()类实例，该map变量作为参数传递给APIRouterV21的基类nova.wsgi.Router，下面看下该基类：
 
 ```python
 class Router(object):
