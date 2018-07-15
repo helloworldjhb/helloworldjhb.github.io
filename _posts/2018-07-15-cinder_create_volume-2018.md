@@ -8,7 +8,7 @@ subtitle: ""
 date: 2018-07-15 17:08:00
 
 author:     "Jobin"
-header-img: "img/post-bg-2018-624.jpg"
+header-img: "img/post-bg-2018-715.png"
 catalog: true
 tags:
     - Cinder-create-volume
