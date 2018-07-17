@@ -8,11 +8,13 @@ subtitle: ""
 date: 2018-07-15 17:08:00
 
 author:     "Jobin"
-header-img: "img/post-bg-2018-715.png"
+header-img: ""
 catalog: true
 tags:
     - Cinder-create-volume
 ---
+
+![cinder](https://helloworldjhb.github.io/img/post-bg-2018-715.png)
 
 # Cinder创建卷源码分析（Queens）
 
